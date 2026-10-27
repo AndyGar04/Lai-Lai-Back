@@ -29,7 +29,7 @@ export async function crearPedido(req: Request, res: Response, next: NextFunctio
 }
 
 export function listarPedidos(req: Request, res: Response) {
-  const { estado, metodo, desde, hasta, q } = req.query;
+  const { estado, metodo, desde, hasta, q, dia } = req.query;
   const where: string[] = [];
   const params: string[] = [];
 
@@ -40,6 +40,10 @@ export function listarPedidos(req: Request, res: Response) {
   if (typeof metodo === "string" && METODOS.includes(metodo as Metodo)) {
     where.push("metodo_pago = ?");
     params.push(metodo);
+  }
+  if (typeof dia === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dia.trim())) {
+    where.push("substr(fecha, 1, 10) = ?");
+    params.push(dia.trim());
   }
 
   const aIso = (v: unknown) =>
@@ -67,6 +71,59 @@ export function listarPedidos(req: Request, res: Response) {
     ORDER BY fecha DESC LIMIT 500`;
   const filas = db.prepare(sql).all(...params) as FilaPedido[];
   res.json(filas.map((f) => aPedido(f, true)));
+}
+
+export function resumenVentasPorDia(req: Request, res: Response) {
+  const { desde, hasta } = req.query;
+  const aIso = (v: unknown) =>
+    typeof v === "string" && !Number.isNaN(Date.parse(v))
+      ? new Date(v).toISOString()
+      : null;
+
+  const fechaDesde = aIso(desde);
+  const fechaHasta = aIso(hasta);
+  const where: string[] = [];
+  const params: string[] = [];
+
+  if (fechaDesde) {
+    where.push("fecha >= ?");
+    params.push(fechaDesde);
+  }
+  if (fechaHasta) {
+    where.push("fecha < ?");
+    params.push(fechaHasta);
+  }
+
+  const sql = `
+    SELECT
+      substr(fecha, 1, 10) AS dia,
+      COUNT(*) AS total_ventas,
+      COALESCE(SUM(CASE WHEN estado = 'pagado' THEN total ELSE 0 END), 0) AS recaudado,
+      COALESCE(SUM(CASE WHEN estado = 'pendiente' THEN 1 ELSE 0 END), 0) AS pendientes,
+      COALESCE(SUM(CASE WHEN estado = 'cancelado' THEN 1 ELSE 0 END), 0) AS cancelados
+    FROM pedidos
+    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+    GROUP BY substr(fecha, 1, 10)
+    ORDER BY dia DESC
+  `;
+
+  const filas = db.prepare(sql).all(...params) as Array<{
+    dia: string;
+    total_ventas: number;
+    recaudado: number;
+    pendientes: number;
+    cancelados: number;
+  }>
+
+  res.json(
+    filas.map((fila) => ({
+      dia: fila.dia,
+      totalVentas: Number(fila.total_ventas),
+      recaudado: Number(fila.recaudado),
+      pendientes: Number(fila.pendientes),
+      cancelados: Number(fila.cancelados),
+    }))
+  );
 }
 
 export function detallePedido(req: Request, res: Response) {
